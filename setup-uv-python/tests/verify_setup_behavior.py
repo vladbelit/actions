@@ -81,27 +81,19 @@ def _verify_python_runtime(
       f"python version mismatch: got {major_minor}, expected {expected_minor}"
     )
 
-  # Test that PATH includes the venv bin/Scripts directory unless explicitly disabled.
-  py_dir_raw = str(output_bin_raw.parent)
-  py_dir_resolved = str(output_bin.parent)
+  py_dir = str(output_bin_raw.parent)
 
   path_entries = [
     entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry
   ]
   path_norm = {_norm_path(entry) for entry in path_entries}
-  py_dir_in_path = (
-    _norm_path(py_dir_raw) in path_norm or _norm_path(py_dir_resolved) in path_norm
-  )
+  py_dir_in_path = _norm_path(py_dir) in path_norm
 
   if add_python_to_path and not py_dir_in_path:
-    raise RuntimeError(
-      f"{py_dir_raw} not present in PATH (resolved: {py_dir_resolved})"
-    )
+    raise RuntimeError(f"{py_dir} not present in PATH")
 
   if not add_python_to_path and py_dir_in_path:
-    raise RuntimeError(
-      f"{py_dir_raw} unexpectedly present in PATH (resolved: {py_dir_resolved})"
-    )
+    raise RuntimeError(f"{py_dir} unexpectedly present in PATH")
 
   print(f"python executable: {sys_executable}")
   print(f"python version: {major_minor}")
