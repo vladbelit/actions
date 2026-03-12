@@ -1,0 +1,172 @@
+name: setup-uv-python integration test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'setup-uv-python/**'
+      - '.github/workflows/setup-uv-python-test.yaml'
+  workflow_dispatch:
+    inputs:
+      halt-for-connection:
+        description: 'Should this workflow run wait for a remote connection?'
+        type: choice
+        default: 'no'
+        options:
+          - 'yes'
+          - 'no'
+
+permissions:
+  contents: read
+
+# Cancel any previous runs on the same branch when a new commit is pushed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  integration:
+    name: Test-Scenario (${{ matrix.scenario.name }}, ${{ matrix.scenario.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - name: implicit-cache-glob-linux
+            runner: ubuntu-latest
+            python_version: '3.12'
+            cache_glob: ''
+            summary_label: 'implicit-cache-glob'
+            expected_summary_label: 'implicit-cache-glob'
+            add_python_to_path: 'true'
+            export_python_env: 'true'
+          - name: implicit-cache-glob-windows
+            runner: windows-latest
+            python_version: '3.12'
+            cache_glob: ''
+            summary_label: ''
+            expected_summary_label: 'python-3.12'
+            add_python_to_path: 'true'
+            export_python_env: 'true'
+          - name: custom-cache-glob
+            runner: ubuntu-latest
+            python_version: '3.12'
+            cache_glob: '.github/workflows/setup-uv-python-test.yaml'
+            summary_label: 'custom-cache-glob'
+            expected_summary_label: 'custom-cache-glob'
+            add_python_to_path: 'true'
+            export_python_env: 'true'
+          - name: no-env-export
+            runner: ubuntu-latest
+            python_version: '3.12'
+            cache_glob: ''
+            summary_label: 'no-env-export'
+            expected_summary_label: 'no-env-export'
+            add_python_to_path: 'true'
+            export_python_env: 'false'
+          - name: no-path-export-env
+            runner: ubuntu-latest
+            python_version: '3.12'
+            cache_glob: ''
+            summary_label: 'no-path-export-env'
+            expected_summary_label: 'no-path-export-env'
+            add_python_to_path: 'false'
+            export_python_env: 'true'
+    runs-on: ${{ matrix.scenario.runner }}
+
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # ratchet:actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up uv-managed Python (implicit cache glob)
+        if: ${{ matrix.scenario.cache_glob == '' }}
+        id: setup_python_default
+        uses: ./setup-uv-python
+        env:
+          CI_UV_DEBUG: 'true'
+        with:
+          python-version: ${{ matrix.scenario.python_version }}
+          summary-label: ${{ matrix.scenario.summary_label }}
+          add-python-to-path: ${{ matrix.scenario.add_python_to_path }}
+          export-python-env: ${{ matrix.scenario.export_python_env }}
+
+      - name: Set up uv-managed Python (custom cache glob)
+        if: ${{ matrix.scenario.cache_glob != '' }}
+        id: setup_python_custom
+        uses: ./setup-uv-python
+        env:
+          CI_UV_DEBUG: 'true'
+        with:
+          python-version: ${{ matrix.scenario.python_version }}
+          summary-label: ${{ matrix.scenario.summary_label }}
+          cache-dependency-glob: ${{ matrix.scenario.cache_glob }}
+          add-python-to-path: ${{ matrix.scenario.add_python_to_path }}
+          export-python-env: ${{ matrix.scenario.export_python_env }}
+
+      - name: Verify python aliases, output, and environment exports
+        env:
+          SETUP_PYTHON_BIN: ${{ steps.setup_python_default.outputs.python-bin || steps.setup_python_custom.outputs.python-bin }}
+          EXPECTED_MINOR: ${{ matrix.scenario.python_version }}
+          SUMMARY_LABEL: ${{ matrix.scenario.expected_summary_label }}
+          ADD_PYTHON_TO_PATH: ${{ matrix.scenario.add_python_to_path }}
+          EXPORT_PYTHON_ENV: ${{ matrix.scenario.export_python_env }}
+        run: |
+          set -euo pipefail
+
+          PYTHON_CMD="$SETUP_PYTHON_BIN"
+          if [ "$ADD_PYTHON_TO_PATH" = 'true' ]; then
+            PYTHON_CMD='python'
+          fi
+
+          "$PYTHON_CMD" setup-uv-python/tests/verify_setup_behavior.py \
+            --check python-runtime \
+            --expected-minor "$EXPECTED_MINOR" \
+            --setup-python-bin "$SETUP_PYTHON_BIN" \
+            --export-python-env "$EXPORT_PYTHON_ENV" \
+            --add-python-to-path "$ADD_PYTHON_TO_PATH"
+
+          if [ "$ADD_PYTHON_TO_PATH" = 'true' ]; then
+            python3 setup-uv-python/tests/verify_setup_behavior.py \
+              --check python3-alias \
+              --expected-minor "$EXPECTED_MINOR" \
+              --setup-python-bin "$SETUP_PYTHON_BIN"
+          fi
+
+          "$SETUP_PYTHON_BIN" setup-uv-python/tests/verify_setup_behavior.py \
+            --check summary-output \
+            --summary-label "$SUMMARY_LABEL"
+
+  invalid-python-version:
+    name: Invalid python-version fails clearly
+    # runs-on: linux-x86-n2-16
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # ratchet:actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Run setup-uv-python with invalid version
+        id: setup_python_invalid
+        continue-on-error: true
+        uses: ./setup-uv-python
+        with:
+          python-version: '9.999'
+          summary-label: invalid
+
+      - name: Assert invalid version failed
+        env:
+          SETUP_PYTHON_INVALID_OUTCOME: ${{ steps.setup_python_invalid.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$SETUP_PYTHON_INVALID_OUTCOME" != "failure" ]; then
+            echo "Expected setup-uv-python to fail for an invalid version"
+            exit 1
+          fi
